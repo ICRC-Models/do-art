@@ -72,9 +72,15 @@ SImod(tseqMonth, initial, disease_params())
 ## Function to run the deterministic model simulation, based on the ODE system defined in SImod().
 simEpidemic <- function(tseq = tseqMonth, init = initial, modFunction=SImod, parms = disease_params()) {
   simDat <- as.data.frame(lsoda(init, tseq, modFunction, parms=parms))
-  simDat$I <- rowSums(simDat[, 1 + (which(index$hiv > 0))])
+  
+  ## Reorganize so time is last column - makes referencing using the index easier
+  simDat <- simDat[, c(2:nrow(index), 1)]
+  
+  simDat$I <- rowSums(simDat[, which(index$hiv > 0)])
   simDat$N <- rowSums(simDat[, 2:ncol(simDat)])
   simDat$P <- with(simDat, I/N)
+  
+
   return(simDat)
 }
 
@@ -176,7 +182,7 @@ out <- simEpidemic(init = initial, parms = disease_params("Beta" = exp(MLEfits['
 # 
 # out <- simEpidemic(init = init)
 
-out$S <- rowSums(out[, 1 + which(index$hiv == 0)])
+out$S <- rowSums(out[, which(index$hiv == 0)])
 long <- (out
   %>% gather(., state, n, -time)
 )
