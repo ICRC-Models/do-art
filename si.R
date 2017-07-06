@@ -13,7 +13,8 @@ library(deSolve)
 theme_set(theme_bw())
 
 ## Index
-index <- expand.grid(hiv = seq(0, 4), male = c(0, 1))
+index <- expand.grid(hiv = seq(0, 4), male = c(0, 1), age = seq(1, 12))
+index$row <- seq(1, nrow(index)) ## This keeps track of the original index for use later
 
 ## Initial parameters
 ## Function that makes a list of disease parameters with default values
@@ -23,6 +24,7 @@ disease_params <- function(Beta = 0.3
                            , progRt = (1/10)*4 ## rate of of progression through each of the I classes, for 10 years total
                            , birthRt = .03 ## birth rate, 3% of people give birth per year
                            , deathRt = 1/60 ## 60 year natural life expectancy
+                           , ageRt = 1/5 ## In a given year, 1/5 of a 5-year age group will progress to the next age group
                            , ind = index
 
 )
@@ -35,15 +37,15 @@ initInf <- exp(-7)
 initSusc <- 5000
 
 initial <- rep(0, nrow(index))
-initial[index$hiv == 0] <- initSusc
+initial[index$hiv == 0] <- initSusc/(length(unique(index$male)) * length(unique(index$age)))
 initial[index$hiv == 1] <- initInf
 
 SImod <- function(tt, nn, parms) with(c(parms, as.list(tt)), {
   
-  ## browser()
+  browser()
   N <- sum(nn)
   I <- sum(nn[ind$hiv > 0]) ## Currently length 1: all HIV-infected people
-  S <- nn[ind$hiv == 0] ## Currently length 2: males and females
+  S <- nn[ind$hiv == 0] ## Not length 1: age * sex
   
   mortResponse <- exp(-q*progRt*sum(nn[ind$hiv == 4])/N)
   
@@ -51,6 +53,31 @@ SImod <- function(tt, nn, parms) with(c(parms, as.list(tt)), {
   
   ## state variable derivatives (ODE system)
   deriv <- rep(NA, length(nn))
+  
+  
+  ## Demographics
+  births <- rep(0, length(nn))
+  births[ind$hiv == 0 & ind$age == 1] <- birthRt*sum(nn[ind$male == 0])/2 ## Birth rate * number of females / 2 (birth sexes)
+  
+  deaths <- rep(0, length(nn))
+  deaths <- -deathRt*nn ## Represents deaths due to background mortality
+  
+  aging <- rep(0, length(nn))
+  aging <- -nn*ageRt ## People leaving the age group
+  
+  age_in <- cbind(ind[, c("hiv", "male", "age")], aging)
+  age_in$age <- age_in$age + 1 ## Set to age group to be entered
+  
+  age_in <- merge(ind, age_in, by = c("hiv", "male", "age"))
+  aging[age_in$row] <- aging[age_in$row] + (-age_in$aging) ## Note that the age numbers are negative as they were calculated for people leaving the age group.
+  
+  ## Disease Progression
+  prog <- rep(0, length(nn))
+  prog
+  
+  
+  ## Transmission
+  
   
   deriv[ind$hiv == 0] <- birthRt*N - deathRt*S - transmissionCoef*S*I/N ## Instantaneous rate of change: Susceptibles
   deriv[ind$hiv == 1] <-	transmissionCoef*S*I/N - progRt*nn[ind$hiv == 1] - deathRt*nn[ind$hiv == 1] ## Instantaneous rate of change: Infection class I1
