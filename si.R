@@ -13,8 +13,20 @@ library(deSolve)
 theme_set(theme_bw())
 
 ## Index
-index <- expand.grid(hiv = seq(0, 4), male = c(0, 1), age = seq(1, 12))
-index$row <- seq(1, nrow(index)) ## This keeps track of the original index for use later
+age <- seq(1, 12) ## First dimension
+age_names <- c("0-4", "5-9", "10-14", "15-19", "20-24", "25-29", "30-34", "35-39", "40-44", "45-49", "50-54", "55-59")
+sex <- seq(1, 2) ## Second dimension
+sex_names <- c("male", "female")
+hiv <- seq(1, 5) ## Third dimension - could consider renaming this to "disease" or something like that
+hiv_names <- c("negative", "stage1", "stage2", "stage3", "stage4")
+hiv_states <- c("stage1", "stage2", "stage3", "stage4")
+
+pop <- array(data = rep(0, length(age) * length(sex) * length(hiv)),
+             dim = c(length(age), length(sex), length(hiv)),
+             dimnames = list(age_names, sex_names, hiv_names))
+
+diff <- pop
+
 
 ## Initial parameters
 ## Function that makes a list of disease parameters with default values
@@ -22,96 +34,108 @@ disease_params <- function(Beta = 0.3
                            , alpha = 4 ## rate of beta decline with prevalence
                            , q = 2 ## Effect of behavior change in response to mortality
                            , progRt = (1/10)*4 ## rate of of progression through each of the I classes, for 10 years total
-                           , birthRt = .03 ## birth rate, 3% of people give birth per year
+                           , birthRt = rep(.03, length(age)) ## age-specific birth rate, 3% of people give birth per year
                            , deathRt = 1/60 ## 60 year natural life expectancy
                            , ageRt = 1/5 ## In a given year, 1/5 of a 5-year age group will progress to the next age group
-                           , ind = index
+                           , state = pop ## state variables
+                           , deriv = diff ## change in state variables
 
 )
   return(as.list(environment()))
 
-disease_params()
 tseqMonth <- seq(1975, 2020, by = 1/12)
 
 initInf <- exp(-7)
 initSusc <- 5000
 
-initial <- rep(0, nrow(index))
-initial[index$hiv == 0] <- initSusc/(length(unique(index$male)) * length(unique(index$age)))
-initial[index$hiv == 1] <- initInf
+pop[,,"negative"] <- initSusc/(length(age) * length(sex))
+pop[,,"stage1"] <- initInf/(length(age) * length(sex))
 
 SImod <- function(tt, nn, parms) with(c(parms, as.list(tt)), {
   
-  browser()
-  N <- sum(nn)
-  I <- sum(nn[ind$hiv > 0]) ## Currently length 1: all HIV-infected people
-  S <- nn[ind$hiv == 0] ## Not length 1: age * sex
+  ## browser()
+  ## Derived state variables
+  N <- sum(state)
+  S <- sum(state[,,"negative"])
+  I <- sum(state[,, hiv_states])
   
-  mortResponse <- exp(-q*progRt*sum(nn[ind$hiv == 4])/N)
+  ## Derived parameters
+  mortResponse <- exp(-q*progRt*sum(state[,,"stage4"])/N) ## Factor by which observed mortality reduces beta
+  transmissionCoef <- mortResponse * Beta * exp(-alpha * I/N) ## Infectious contact rate
   
-  transmissionCoef <- mortResponse * Beta * exp(-alpha * sum(I)/N) ## Infectious contact rate
+  ## Derivatives ## Maybe can make this faster by pre-allocating arrays for births, deaths, aging, etc?
+  ## Births
+  deriv["0-4",,"negative"] <- deriv["0-4",,"negative"] + sum(birthRt * state[, "female", ])/length(sex) ## Divide between male and female births
   
-  ## state variable derivatives (ODE system)
-  deriv <- rep(NA, length(nn))
-  
-  
-  ## Demographics
-  births <- rep(0, length(nn))
-  births[ind$hiv == 0 & ind$age == 1] <- birthRt*sum(nn[ind$male == 0])/2 ## Birth rate * number of females / 2 (birth sexes)
-  
-  deaths <- rep(0, length(nn))
-  deaths <- -deathRt*nn ## Represents deaths due to background mortality
-  
-  aging <- rep(0, length(nn))
-  aging <- -nn*ageRt ## People leaving the age group
-  
-  age_in <- cbind(ind[, c("hiv", "male", "age")], aging)
-  age_in$age <- age_in$age + 1 ## Set to age group to be entered
-  
-  age_in <- merge(ind, age_in, by = c("hiv", "male", "age"))
-  aging[age_in$row] <- aging[age_in$row] + (-age_in$aging) ## Note that the age numbers are negative as they were calculated for people leaving the age group.
-  
+  ## Background mortality
+  deriv <- deriv - deathRt * state
+    
+  ## Aging
+  deriv <- deriv - ageRt * state ## People leaving the compartment due to age
+  deriv[2:length(age),,] <- deriv[2:length(age),,] + ageRt * state[1:(length(age) - 1),,] ## People entering the compartment due to age
+
   ## Disease Progression
-  prog <- rep(0, length(nn))
-  prog
+  deriv[,,hiv_states] <- deriv[,,hiv_states] - progRt * state[,,hiv_states] ## Progression out of the HIV compartments
+  deriv[,,c("stage2", "stage3", "stage4")] <- deriv[,,c("stage2", "stage3", "stage4")] + progRt * state[,,c("stage1", "stage2", "stage3")] ## Progression into the HIV compartments from previous compartments
   
+  ## Transmission matrices
+  prev_mat <- apply(state[,,hiv_states], 1:2, sum)/apply(state[,,], 1:2, sum) ## Age- and sex-specific prevalence
+  susc_mat <- apply(state[,,"negative"], 1:2, sum) ## Age- and sex-specific number of susceptibles
   
   ## Transmission
+  deriv[,,"stage1"] <- deriv[,,"stage1"] + transmissionCoef*susc_mat*prev_mat[, rev(colnames(susc_mat))] ## Note that I'm reversing the order of the columns of the prevalence matrix, which ensures that the prevalence in females is multipled by the number of susceptibles in males (and vice versa). This implies perfect assortativity by age.
+  deriv[,,"negative"] <- deriv[,,"negative"] - transmissionCoef*susc_mat*prev_mat[, rev(colnames(susc_mat))]
   
-  
-  deriv[ind$hiv == 0] <- birthRt*N - deathRt*S - transmissionCoef*S*I/N ## Instantaneous rate of change: Susceptibles
-  deriv[ind$hiv == 1] <-	transmissionCoef*S*I/N - progRt*nn[ind$hiv == 1] - deathRt*nn[ind$hiv == 1] ## Instantaneous rate of change: Infection class I1
-  deriv[ind$hiv == 2] <-	progRt*nn[ind$hiv == 1] - progRt*nn[ind$hiv == 2] - deathRt*nn[ind$hiv == 2] ## Instantaneous rate of change:  Infection class I2
-  deriv[ind$hiv == 3] <-	progRt*nn[ind$hiv == 2] - progRt*nn[ind$hiv == 3] - deathRt*nn[ind$hiv == 3] ## Instantaneous rate of change:  Infection class I2
-  deriv[ind$hiv == 4] <-	progRt*nn[ind$hiv == 3] - progRt*nn[ind$hiv == 4] - deathRt*nn[ind$hiv == 4] ## Instantaneous rate of change:  Infection class I2
-  # deriv[6] <-	transmissionCoef*S*I/N ## Instantaneous rate of change: Cumulative incidence
-  # deriv[7] <-	progRt*I4 ## Instantaneous rate of change: Cumulative mortality
-  
-  return(list(deriv))
+  return(list(as.vector(deriv)))
 })
 
-SImod(tseqMonth, initial, disease_params())
+reconstruct <- function(vec) {
+  array(data = vec,
+        dim = c(length(age), length(sex), length(hiv)),
+        dimnames = list(age_names, sex_names, hiv_names))
+  
+}
+SImod(tseqMonth, as.vector(pop), disease_params())
+reconstruct(unlist(SImod(tseqMonth, as.vector(pop), disease_params())))
+
 
 
 # init <- c(S=initPop, I1 = initPrev, I2 = emptyArray, I3 = emptyArray, I4 = emptyArray, CI = emptyArray, CD =  emptyArray) ## modeling proportion of population
 # Is <- paste0('I',1:4) ## for easy indexing
 
 ## Function to run the deterministic model simulation, based on the ODE system defined in SImod().
-simEpidemic <- function(tseq = tseqMonth, init = initial, modFunction=SImod, parms = disease_params()) {
+simEpidemic <- function(tseq = tseqMonth, init = as.vector(pop), modFunction=SImod, parms = disease_params()) {
   simDat <- as.data.frame(lsoda(init, tseq, modFunction, parms=parms))
   
-  ## Reorganize so time is last column - makes referencing using the index easier
-  simDat <- simDat[, c(2:nrow(index), 1)]
+  simDat <- apply(simDat[, 2:ncol(simDat)], 1, function(x){
+
+    state <- reconstruct(x)
+    N <- sum(state)
+    S <- sum(state[,,"negative"])
+    I <- sum(state[,, hiv_states])
+
+    return(c(N, S, I))
+
+
+  })
   
-  simDat$I <- rowSums(simDat[, which(index$hiv > 0)])
-  simDat$N <- rowSums(simDat[, 2:ncol(simDat)])
+  simDat <- as.data.frame(t(simDat))
+  names(simDat) <- c("N", "S", "I")
+  simDat$time <- tseqMonth
   simDat$P <- with(simDat, I/N)
+  ## Reorganize so time is last column - makes referencing using the index easier
+  # simDat <- simDat[, c(2:nrow(index), 1)]
+  # 
+  # simDat$I <- rowSums(simDat[, which(index$hiv > 0)])
+  # simDat$N <- rowSums(simDat[, 2:ncol(simDat)])
+  # simDat$P <- with(simDat, I/N)
   
 
   return(simDat)
 }
 
 simEpidemic()
+
 
 ## Prevalence estimates
 kzn_prev <- read_csv("data/kzn_hiv_prev_survey.csv")
@@ -143,7 +167,7 @@ subsParms <- function(fit.params, fixed.params=disease_params())
 
 ## Likelihood
 nllikelihood <- function(parms = disease_params(), obsDat=prev) {
-  simDat <- simEpidemic(init = initial, parms=parms)
+  simDat <- simEpidemic(init = as.vector(pop), parms=parms)
   ## What are the rows from our simulation at which we have observed data?
   matchedTimes <- simDat$time %in% obsDat$time
   nlls <- -dbinom(obsDat$numPos, obsDat$numSamp, prob = simDat$P[matchedTimes], log = T)
@@ -191,7 +215,7 @@ MLEfits <- optim.vals$par
 exp(MLEfits)
 
 ## Run simulation
-out <- simEpidemic(init = initial, parms = disease_params("Beta" = exp(MLEfits['log_Beta']), "alpha" = exp(MLEfits['log_alpha']), "q" = exp(MLEfits['log_q'])))
+out <- simEpidemic(init = as.vector(pop), parms = disease_params("Beta" = exp(MLEfits['log_Beta']), "alpha" = exp(MLEfits['log_alpha']), "q" = exp(MLEfits['log_q'])))
 
 # disease_params <- function(Beta = 0.45
 #                            , alpha = 1 ## rate of beta decline with prevalence
@@ -209,7 +233,6 @@ out <- simEpidemic(init = initial, parms = disease_params("Beta" = exp(MLEfits['
 # 
 # out <- simEpidemic(init = init)
 
-out$S <- rowSums(out[, which(index$hiv == 0)])
 long <- (out
   %>% gather(., state, n, -time)
 )
