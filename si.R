@@ -12,6 +12,9 @@ library(deSolve)
 
 theme_set(theme_bw())
 
+## Index
+index <- expand.grid(hiv = seq(0, 4), male = c(0, 1))
+
 ## Initial parameters
 ## Function that makes a list of disease parameters with default values
 disease_params <- function(Beta = 0.3
@@ -20,47 +23,62 @@ disease_params <- function(Beta = 0.3
                            , progRt = (1/10)*4 ## rate of of progression through each of the I classes, for 10 years total
                            , birthRt = .03 ## birth rate, 3% of people give birth per year
                            , deathRt = 1/60 ## 60 year natural life expectancy
+                           , ind = index
 
 )
   return(as.list(environment()))
 
 disease_params()
-
-initPrev <- exp(-7)
 tseqMonth <- seq(1975, 2020, by = 1/12)
-init <- c(S=10000, I1=initPrev, I2=0, I3=0, I4=0, CI = 0, CD = 0) ## modeling proportion of population
-Is <- paste0('I',1:4) ## for easy indexing
 
-## Define the SI ODE model.
-SImod <- function(tt, yy, parms) with(c(parms,as.list(yy)), {
-  ## State variables are: S, I1, I2, I3, I4
-  ## derived quantities
-  I <- I1+I2+I3+I4           ## total infecteds
-  N <- I + S                 ## total population
+initInf <- exp(-7)
+initSusc <- 5000
+
+initial <- rep(0, nrow(index))
+initial[index$hiv == 0] <- initSusc
+initial[index$hiv == 1] <- initInf
+
+SImod <- function(tt, nn, parms) with(c(parms, as.list(tt)), {
   
-  mortResponse <- exp(-q*progRt*I4/N)
+  ## browser()
+  N <- sum(nn)
+  I <- sum(nn[ind$hiv > 0]) ## Currently length 1: all HIV-infected people
+  S <- nn[ind$hiv == 0] ## Currently length 2: males and females
   
-  transmissionCoef <- mortResponse * Beta * exp(-alpha * I/N) ## Infectious contact rate
+  mortResponse <- exp(-q*progRt*sum(nn[ind$hiv == 4])/N)
+  
+  transmissionCoef <- mortResponse * Beta * exp(-alpha * sum(I)/N) ## Infectious contact rate
+  
   ## state variable derivatives (ODE system)
-  deriv <- rep(NA,7)
-  deriv[1] <-	birthRt*N - deathRt*S - transmissionCoef*S*I/N ## Instantaneous rate of change: Susceptibles
-  deriv[2] <-	transmissionCoef*S*I/N - progRt*I1 - deathRt*I1 ## Instantaneous rate of change: Infection class I1
-  deriv[3] <-	progRt*I1 - progRt*I2 - deathRt*I2 ## Instantaneous rate of change:  Infection class I2
-  deriv[4] <-	progRt*I2 - progRt*I3 - deathRt*I3 ## Instantaneous rate of change: Infection class I3 
-  deriv[5] <-	progRt*I3 - progRt*I4 - deathRt*I4 ## Instantaneous rate of change: Infection class I4
-  deriv[6] <-	transmissionCoef*S*I/N ## Instantaneous rate of change: Cumulative incidence
-  deriv[7] <-	progRt*I4 ## Instantaneous rate of change: Cumulative mortality
+  deriv <- rep(NA, length(nn))
+  
+  deriv[ind$hiv == 0] <- birthRt*N - deathRt*S - transmissionCoef*S*I/N ## Instantaneous rate of change: Susceptibles
+  deriv[ind$hiv == 1] <-	transmissionCoef*S*I/N - progRt*nn[ind$hiv == 1] - deathRt*nn[ind$hiv == 1] ## Instantaneous rate of change: Infection class I1
+  deriv[ind$hiv == 2] <-	progRt*nn[ind$hiv == 1] - progRt*nn[ind$hiv == 2] - deathRt*nn[ind$hiv == 2] ## Instantaneous rate of change:  Infection class I2
+  deriv[ind$hiv == 3] <-	progRt*nn[ind$hiv == 2] - progRt*nn[ind$hiv == 3] - deathRt*nn[ind$hiv == 3] ## Instantaneous rate of change:  Infection class I2
+  deriv[ind$hiv == 4] <-	progRt*nn[ind$hiv == 3] - progRt*nn[ind$hiv == 4] - deathRt*nn[ind$hiv == 4] ## Instantaneous rate of change:  Infection class I2
+  # deriv[6] <-	transmissionCoef*S*I/N ## Instantaneous rate of change: Cumulative incidence
+  # deriv[7] <-	progRt*I4 ## Instantaneous rate of change: Cumulative mortality
+  
   return(list(deriv))
 })
 
+SImod(tseqMonth, initial, disease_params())
+
+
+# init <- c(S=initPop, I1 = initPrev, I2 = emptyArray, I3 = emptyArray, I4 = emptyArray, CI = emptyArray, CD =  emptyArray) ## modeling proportion of population
+# Is <- paste0('I',1:4) ## for easy indexing
+
 ## Function to run the deterministic model simulation, based on the ODE system defined in SImod().
-simEpidemic <- function(init, tseq = tseqMonth, modFunction=SImod, parms = disease_params()) {
+simEpidemic <- function(tseq = tseqMonth, init = initial, modFunction=SImod, parms = disease_params()) {
   simDat <- as.data.frame(lsoda(init, tseq, modFunction, parms=parms))
-  simDat$I <- rowSums(simDat[, Is])
-  simDat$N <- rowSums(simDat[, c('S',Is)])
+  simDat$I <- rowSums(simDat[, 1 + (which(index$hiv > 0))])
+  simDat$N <- rowSums(simDat[, 2:ncol(simDat)])
   simDat$P <- with(simDat, I/N)
   return(simDat)
 }
+
+simEpidemic()
 
 ## Prevalence estimates
 kzn_prev <- read_csv("data/kzn_hiv_prev_survey.csv")
@@ -92,7 +110,7 @@ subsParms <- function(fit.params, fixed.params=disease_params())
 
 ## Likelihood
 nllikelihood <- function(parms = disease_params(), obsDat=prev) {
-  simDat <- simEpidemic(init, parms=parms)
+  simDat <- simEpidemic(init = initial, parms=parms)
   ## What are the rows from our simulation at which we have observed data?
   matchedTimes <- simDat$time %in% obsDat$time
   nlls <- -dbinom(obsDat$numPos, obsDat$numSamp, prob = simDat$P[matchedTimes], log = T)
@@ -140,7 +158,7 @@ MLEfits <- optim.vals$par
 exp(MLEfits)
 
 ## Run simulation
-out <- simEpidemic(init = init, parms = disease_params("Beta" = exp(MLEfits['log_Beta']), "alpha" = exp(MLEfits['log_alpha']), "q" = exp(MLEfits['log_q'])))
+out <- simEpidemic(init = initial, parms = disease_params("Beta" = exp(MLEfits['log_Beta']), "alpha" = exp(MLEfits['log_alpha']), "q" = exp(MLEfits['log_q'])))
 
 # disease_params <- function(Beta = 0.45
 #                            , alpha = 1 ## rate of beta decline with prevalence
@@ -158,6 +176,7 @@ out <- simEpidemic(init = init, parms = disease_params("Beta" = exp(MLEfits['log
 # 
 # out <- simEpidemic(init = init)
 
+out$S <- rowSums(out[, 1 + which(index$hiv == 0)])
 long <- (out
   %>% gather(., state, n, -time)
 )
@@ -165,7 +184,7 @@ long <- (out
 ## Plots
 ggplot(data = prev, aes(x = time, y = mean)) +
   geom_point(aes(shape = source)) +
-  geom_errorbar(aes(ymin = lower, ymax = upper)) +
+  ## geom_errorbar(aes(ymin = lower, ymax = upper)) +
   geom_line(data = out, aes(x = time, y = P)) +
   labs(x = "Year", y = "Prevalence") +
   scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, by = 0.2)) +
@@ -176,17 +195,6 @@ ggplot(data = long[long$state %in% c("S", "I", "N"), ], aes(x = time, y = n)) +
   geom_line(aes(colour = state)) +
   labs(x = "Year", y = "Number") +
   ggtitle("Number of people in S, I, and N compartments")
-
-ggplot(data = out, aes(x = time, y = CI)) +
-  geom_line() +
-  labs(x = "Year", y = "Number of new infections") +
-  ggtitle("Cumulative incidence")
-
-ggplot(data = out, aes(x = time, y = CD)) +
-  geom_line() +
-  labs(x = "Year", y = "Number of deaths") +
-  ggtitle("Cumulative mortality")
-
 
 
 
