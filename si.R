@@ -21,11 +21,11 @@ hiv <- seq(1, 5) ## Third dimension - could consider renaming this to "disease" 
 hiv_names <- c("negative", "stage1", "stage2", "stage3", "stage4")
 hiv_states <- c("stage1", "stage2", "stage3", "stage4")
 
-pop <- array(data = rep(0, length(age) * length(sex) * length(hiv)),
+zeroes <- array(data = rep(0, length(age) * length(sex) * length(hiv)),
              dim = c(length(age), length(sex), length(hiv)),
              dimnames = list(age_names, sex_names, hiv_names))
 
-diff <- pop
+pop <- zeroes
 
 reconstruct <- function(vec) {
   array(data = vec,
@@ -43,14 +43,13 @@ disease_params <- function(Beta = 0.7
                            , birthRt = rep(.03, length(age)) ## age-specific birth rate, 3% of people give birth per year
                            , deathRt = 1/(60) ## 60 year natural life expectancy
                            , ageRt = 1/5 ## In a given year, 1/5 of a 5-year age group will progress to the next age group
-                           # , state = pop ## state variables
-                           # , births = diff 
-                           # , deaths = diff
-                           # , age_in = diff
-                           # , age_out = diff
-                           # , prog_in = diff
-                           # , prog_out = diff
-                           # , trans = diff
+                           , births = zeroes
+                           , deaths = zeroes
+                           , age_in = zeroes
+                           , age_out = zeroes
+                           , prog_in = zeroes
+                           , prog_out = zeroes
+                           , trans = zeroes
                 
 
 )
@@ -64,16 +63,12 @@ initSusc <- 5000
 pop[,,"negative"] <- initSusc/(length(age) * length(sex))
 pop[,,"stage1"] <- initInf/(length(age) * length(sex))
 
-SImod <- function(yy, tt, parms) with(as.list(parms), {
+SImod <- function(tt, yy, parms) with(as.list(parms), {
   
   ## browser()
   
-  state <- reconstruct(tt)
-  
-  births <- deaths <- age_in <- age_out <- prog_in <- prog_out <- trans <- array(data = rep(0, length(age) * length(sex) * length(hiv)),
-               dim = c(length(age), length(sex), length(hiv)),
-               dimnames = list(age_names, sex_names, hiv_names))
-  
+  state <- reconstruct(yy)
+
   ## Derived state variables
   N <- sum(state)
   S <- sum(state[,,"negative"])
@@ -93,17 +88,10 @@ SImod <- function(yy, tt, parms) with(as.list(parms), {
   ## Aging
   age_out <- ageRt * state
   age_in[2:length(age),,] <- ageRt * state[1:(length(age) - 1),,]
-
-  # deriv <- deriv - ageRt * state ## People leaving the compartment due to age
-  # deriv[2:length(age),,] <- deriv[2:length(age),,] + ageRt * state[1:(length(age) - 1),,] ## People entering the compartment due to age
-
+  
   ## Disease Progression
   prog_out[,,hiv_states] <- -progRt * state[,,hiv_states]
   prog_in[,, c("stage2", "stage3", "stage4")] <- progRt * state[,,c("stage1", "stage2", "stage3")]
-  
-  # 
-  # deriv[,,hiv_states] <- deriv[,,hiv_states] - progRt * state[,,hiv_states] ## Progression out of the HIV compartments
-  # deriv[,,c("stage2", "stage3", "stage4")] <- deriv[,,c("stage2", "stage3", "stage4")] + progRt * state[,,c("stage1", "stage2", "stage3")] ## Progression into the HIV compartments from previous compartments
 
   ## Transmission matrices
   prev_mat <- apply(state[,,hiv_states], 1:2, sum)/apply(state, 1:2, sum) ## Age- and sex-specific prevalence
@@ -112,8 +100,7 @@ SImod <- function(yy, tt, parms) with(as.list(parms), {
   ## Transmission
   trans[,,"stage1"] <- transmissionCoef*susc_mat*prev_mat[, rev(colnames(susc_mat))]
   trans[,,"negative"] <- -transmissionCoef*susc_mat*prev_mat[, rev(colnames(susc_mat))]
-  # deriv[,,"stage1"] <- deriv[,,"stage1"] + transmissionCoef*susc_mat*prev_mat[, rev(colnames(susc_mat))] ## Note that I'm reversing the order of the columns of the prevalence matrix, which ensures that the prevalence in females is multipled by the number of susceptibles in males (and vice versa). This implies perfect assortativity by age.
-  # deriv[,,"negative"] <- deriv[,,"negative"] - transmissionCoef*susc_mat*prev_mat[, rev(colnames(susc_mat))]
+  ## Note that I'm reversing the order of the columns of the prevalence matrix, which ensures that the prevalence in females is multipled by the number of susceptibles in males (and vice versa). This implies perfect assortativity by age.
 
   deriv <- births + deaths + age_in + age_out + prog_in + prog_out + trans
   return(list(c(deriv)))
@@ -121,10 +108,6 @@ SImod <- function(yy, tt, parms) with(as.list(parms), {
 
 
 ## SImod(yy = c(pop), tt = tseqMonth, disease_params())
-
-
-
-# SImod(tseqMonth, as.vector(pop), disease_params())
 # reconstruct(unlist(SImod(tseqMonth, as.vector(pop), disease_params())))
 
 
@@ -148,12 +131,6 @@ simEpidemic <- function(tseq = tseqMonth, init = c(pop), modFunction=SImod, parm
   names(simDat) <- c("N", "S", "I")
   simDat$time <- tseqMonth
   simDat$P <- with(simDat, I/N)
-  # Reorganize so time is last column - makes referencing using the index easier
-  # simDat <- simDat[, c(2:nrow(index), 1)]
-  # 
-  # simDat$I <- rowSums(simDat[, which(index$hiv > 0)])
-  # simDat$N <- rowSums(simDat[, 2:ncol(simDat)])
-  # simDat$P <- with(simDat, I/N)
 
 
   return(simDat)
