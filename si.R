@@ -28,32 +28,33 @@ pop <- array(data = rep(0, length(age) * length(sex) * length(hiv)),
 diff <- pop
 
 
+
 ## Initial parameters
 ## Function that makes a list of disease parameters with default values
-disease_params <- function(Beta = 0.3
+disease_params <- function(Beta = 0.9
                            , alpha = 4 ## rate of beta decline with prevalence
                            , q = 2 ## Effect of behavior change in response to mortality
                            , progRt = (1/10)*4 ## rate of of progression through each of the I classes, for 10 years total
                            , birthRt = rep(.03, length(age)) ## age-specific birth rate, 3% of people give birth per year
-                           , deathRt = 1/60 ## 60 year natural life expectancy
-                           , ageRt = 1/5 ## In a given year, 1/5 of a 5-year age group will progress to the next age group
+                           , deathRt = 1/(5*60) ## 60 year natural life expectancy
+                           , ageRt = 1/50 ## In a given year, 1/5 of a 5-year age group will progress to the next age group
                            , state = pop ## state variables
                            , deriv = diff ## change in state variables
 
 )
   return(as.list(environment()))
 
-tseqMonth <- seq(1975, 2020, by = 1/12)
+tseqMonth <- seq(1975, 2020, by = 1/500)
 
-initInf <- exp(-7)
+initInf <- 10
 initSusc <- 5000
 
 pop[,,"negative"] <- initSusc/(length(age) * length(sex))
-pop[,,"stage1"] <- initInf/(length(age) * length(sex))
+pop[,,hiv_states] <- initInf/(length(age) * length(sex))
 
-SImod <- function(tt, nn, parms) with(c(parms, as.list(tt)), {
+SImod <- function(yy, tt, parms) with(as.list(parms), {
   
-  ## browser()
+  # browser()
   ## Derived state variables
   N <- sum(state)
   S <- sum(state[,,"negative"])
@@ -68,25 +69,25 @@ SImod <- function(tt, nn, parms) with(c(parms, as.list(tt)), {
   deriv["0-4",,"negative"] <- deriv["0-4",,"negative"] + sum(birthRt * state[, "female", ])/length(sex) ## Divide between male and female births
   
   ## Background mortality
-  deriv <- deriv - deathRt * state
+  # deriv <- deriv - deathRt * state
     
   ## Aging
-  deriv <- deriv - ageRt * state ## People leaving the compartment due to age
-  deriv[2:length(age),,] <- deriv[2:length(age),,] + ageRt * state[1:(length(age) - 1),,] ## People entering the compartment due to age
+  # deriv <- deriv - ageRt * state ## People leaving the compartment due to age
+  # deriv[2:length(age),,] <- deriv[2:length(age),,] + ageRt * state[1:(length(age) - 1),,] ## People entering the compartment due to age
 
   ## Disease Progression
   deriv[,,hiv_states] <- deriv[,,hiv_states] - progRt * state[,,hiv_states] ## Progression out of the HIV compartments
   deriv[,,c("stage2", "stage3", "stage4")] <- deriv[,,c("stage2", "stage3", "stage4")] + progRt * state[,,c("stage1", "stage2", "stage3")] ## Progression into the HIV compartments from previous compartments
-  
+
   ## Transmission matrices
-  prev_mat <- apply(state[,,hiv_states], 1:2, sum)/apply(state[,,], 1:2, sum) ## Age- and sex-specific prevalence
+  prev_mat <- apply(state[,,hiv_states], 1:2, sum)/apply(state, 1:2, sum) ## Age- and sex-specific prevalence
   susc_mat <- apply(state[,,"negative"], 1:2, sum) ## Age- and sex-specific number of susceptibles
   
   ## Transmission
   deriv[,,"stage1"] <- deriv[,,"stage1"] + transmissionCoef*susc_mat*prev_mat[, rev(colnames(susc_mat))] ## Note that I'm reversing the order of the columns of the prevalence matrix, which ensures that the prevalence in females is multipled by the number of susceptibles in males (and vice versa). This implies perfect assortativity by age.
   deriv[,,"negative"] <- deriv[,,"negative"] - transmissionCoef*susc_mat*prev_mat[, rev(colnames(susc_mat))]
-  
-  return(list(as.vector(deriv)))
+
+  return(list(c(deriv)))
 })
 
 reconstruct <- function(vec) {
@@ -95,34 +96,33 @@ reconstruct <- function(vec) {
         dimnames = list(age_names, sex_names, hiv_names))
   
 }
-SImod(tseqMonth, as.vector(pop), disease_params())
-reconstruct(unlist(SImod(tseqMonth, as.vector(pop), disease_params())))
+SImod(yy = c(pop), tt = tseqMonth, disease_params())
 
 
+# SImod(tseqMonth, as.vector(pop), disease_params())
+# reconstruct(unlist(SImod(tseqMonth, as.vector(pop), disease_params())))
 
-# init <- c(S=initPop, I1 = initPrev, I2 = emptyArray, I3 = emptyArray, I4 = emptyArray, CI = emptyArray, CD =  emptyArray) ## modeling proportion of population
-# Is <- paste0('I',1:4) ## for easy indexing
 
 ## Function to run the deterministic model simulation, based on the ODE system defined in SImod().
-simEpidemic <- function(tseq = tseqMonth, init = as.vector(pop), modFunction=SImod, parms = disease_params()) {
-  simDat <- as.data.frame(lsoda(init, tseq, modFunction, parms=parms))
+simEpidemic <- function(tseq = tseqMonth, init = c(pop), modFunction=SImod, parms = disease_params()) {
+  simDat <- as.data.frame(lsoda(y = init, times = tseq, modFunction, parms=parms))
   
-  simDat <- apply(simDat[, 2:ncol(simDat)], 1, function(x){
-
-    state <- reconstruct(x)
-    N <- sum(state)
-    S <- sum(state[,,"negative"])
-    I <- sum(state[,, hiv_states])
-
-    return(c(N, S, I))
-
-
-  })
-  
-  simDat <- as.data.frame(t(simDat))
-  names(simDat) <- c("N", "S", "I")
-  simDat$time <- tseqMonth
-  simDat$P <- with(simDat, I/N)
+  # simDat <- apply(simDat[, 2:ncol(simDat)], 1, function(x){
+  # 
+  #   state <- reconstruct(x)
+  #   N <- sum(state)
+  #   S <- sum(state[,,"negative"])
+  #   I <- sum(state[,, hiv_states])
+  # 
+  #   return(c(N, S, I))
+  # 
+  # 
+  # })
+  # 
+  # simDat <- as.data.frame(t(simDat))
+  # names(simDat) <- c("N", "S", "I")
+  # simDat$time <- tseqMonth
+  # simDat$P <- with(simDat, I/N)
   ## Reorganize so time is last column - makes referencing using the index easier
   # simDat <- simDat[, c(2:nrow(index), 1)]
   # 
@@ -134,7 +134,22 @@ simEpidemic <- function(tseq = tseqMonth, init = as.vector(pop), modFunction=SIm
   return(simDat)
 }
 
-simEpidemic()
+out <- simEpidemic()
+
+x <-unlist(out[nrow(out), 2:ncol(out)])
+reconstruct(x)
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 ## Prevalence estimates
@@ -167,7 +182,7 @@ subsParms <- function(fit.params, fixed.params=disease_params())
 
 ## Likelihood
 nllikelihood <- function(parms = disease_params(), obsDat=prev) {
-  simDat <- simEpidemic(init = as.vector(pop), parms=parms)
+  simDat <- simEpidemic(init = c(pop), parms=parms)
   ## What are the rows from our simulation at which we have observed data?
   matchedTimes <- simDat$time %in% obsDat$time
   nlls <- -dbinom(obsDat$numPos, obsDat$numSamp, prob = simDat$P[matchedTimes], log = T)
@@ -215,7 +230,7 @@ MLEfits <- optim.vals$par
 exp(MLEfits)
 
 ## Run simulation
-out <- simEpidemic(init = as.vector(pop), parms = disease_params("Beta" = exp(MLEfits['log_Beta']), "alpha" = exp(MLEfits['log_alpha']), "q" = exp(MLEfits['log_q'])))
+out <- simEpidemic(init = c(pop), parms = disease_params("Beta" = exp(MLEfits['log_Beta']), "alpha" = exp(MLEfits['log_alpha']), "q" = exp(MLEfits['log_q'])))
 
 # disease_params <- function(Beta = 0.45
 #                            , alpha = 1 ## rate of beta decline with prevalence
