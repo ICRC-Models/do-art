@@ -27,25 +27,30 @@ pop <- array(data = rep(0, length(age) * length(sex) * length(hiv)),
 
 diff <- pop
 
-
+reconstruct <- function(vec) {
+  array(data = vec,
+        dim = c(length(age), length(sex), length(hiv)),
+        dimnames = list(age_names, sex_names, hiv_names))
+  
+}
 
 ## Initial parameters
 ## Function that makes a list of disease parameters with default values
-disease_params <- function(Beta = 0.9
-                           , alpha = 4 ## rate of beta decline with prevalence
+disease_params <- function(Beta = 0.7
+                           , alpha = 7## rate of beta decline with prevalence
                            , q = 2 ## Effect of behavior change in response to mortality
                            , progRt = (1/10)*4 ## rate of of progression through each of the I classes, for 10 years total
                            , birthRt = rep(.03, length(age)) ## age-specific birth rate, 3% of people give birth per year
                            , deathRt = 1/(60) ## 60 year natural life expectancy
                            , ageRt = 1/5 ## In a given year, 1/5 of a 5-year age group will progress to the next age group
-                           , state = pop ## state variables
-                           , births = diff 
-                           , deaths = diff
-                           , age_in = diff
-                           , age_out = diff
-                           , prog_in = diff
-                           , prog_out = diff
-                           , trans = diff
+                           # , state = pop ## state variables
+                           # , births = diff 
+                           # , deaths = diff
+                           # , age_in = diff
+                           # , age_out = diff
+                           # , prog_in = diff
+                           # , prog_out = diff
+                           # , trans = diff
                 
 
 )
@@ -61,7 +66,14 @@ pop[,,"stage1"] <- initInf/(length(age) * length(sex))
 
 SImod <- function(yy, tt, parms) with(as.list(parms), {
   
-  # browser()
+  ## browser()
+  
+  state <- reconstruct(tt)
+  
+  births <- deaths <- age_in <- age_out <- prog_in <- prog_out <- trans <- array(data = rep(0, length(age) * length(sex) * length(hiv)),
+               dim = c(length(age), length(sex), length(hiv)),
+               dimnames = list(age_names, sex_names, hiv_names))
+  
   ## Derived state variables
   N <- sum(state)
   S <- sum(state[,,"negative"])
@@ -81,7 +93,7 @@ SImod <- function(yy, tt, parms) with(as.list(parms), {
   ## Aging
   age_out <- ageRt * state
   age_in[2:length(age),,] <- ageRt * state[1:(length(age) - 1),,]
-  
+
   # deriv <- deriv - ageRt * state ## People leaving the compartment due to age
   # deriv[2:length(age),,] <- deriv[2:length(age),,] + ageRt * state[1:(length(age) - 1),,] ## People entering the compartment due to age
 
@@ -107,13 +119,8 @@ SImod <- function(yy, tt, parms) with(as.list(parms), {
   return(list(c(deriv)))
 })
 
-reconstruct <- function(vec) {
-  array(data = vec,
-        dim = c(length(age), length(sex), length(hiv)),
-        dimnames = list(age_names, sex_names, hiv_names))
-  
-}
-SImod(yy = c(pop), tt = tseqMonth, disease_params())
+
+## SImod(yy = c(pop), tt = tseqMonth, disease_params())
 
 
 
@@ -152,7 +159,7 @@ simEpidemic <- function(tseq = tseqMonth, init = c(pop), modFunction=SImod, parm
   return(simDat)
 }
 
-out <- simEpidemic()
+##out <- simEpidemic()
 
 # x <-unlist(out[nrow(out), 2:ncol(out)])
 # reconstruct(x)
@@ -179,7 +186,7 @@ rm(kzn_prev, zaf_prev)
 subsParms <- function(fit.params, fixed.params=disease_params())
   within(fixed.params, {
     loggedParms <- names(fit.params)[grepl('log_', names(fit.params))]
-    unloggedParms <- names(fit.params)[!grepl('log_', names(fit.params))]        
+    unloggedParms <- names(fit.params)[!grepl('log_', names(fit.params))]
     for(nm in unloggedParms) assign(nm, as.numeric(fit.params[nm]))
     for(nm in loggedParms) assign(gsub('log_','',nm), exp(as.numeric(fit.params[nm])))
     rm(nm, loggedParms, unloggedParms)
@@ -211,7 +218,7 @@ trace <- 3
 
 ## SANN: This is stochastic, be CAREFUL sometimes it gets stuck at local minima
 ## for unreasonble parameters. If you see this happen, run it again!
-init.pars <- c(log_alpha = log(4), log_Beta = log(9), log_q = log(2))
+init.pars <- c(log_alpha = log(7), log_Beta = log(0.7), log_q = log(2))
 optim.vals <- optim(par = init.pars
                     , objFXN
                     , fixed.params = disease_params()
@@ -237,22 +244,6 @@ exp(MLEfits)
 ## Run simulation
 out <- simEpidemic(init = c(pop), parms = disease_params("Beta" = exp(MLEfits['log_Beta']), "alpha" = exp(MLEfits['log_alpha']), "q" = exp(MLEfits['log_q'])))
 
-# disease_params <- function(Beta = 0.45
-#                            , alpha = 1 ## rate of beta decline with prevalence
-#                            , q = 80 ## Effect of behavior change in response to mortality
-#                            , progRt = (1/10)*4 ## rate of of progression through each of the I classes, for 10 years total
-#                            , birthRt = .03 ## birth rate, 3% of people give birth per year
-#                            , deathRt = 1/60 ## 60 year natural life expectancy
-#                            
-# )
-#   return(as.list(environment()))
-# 
-# disease_params()
-# 
-# initPrev <- exp(3)
-# 
-# out <- simEpidemic(init = init)
-
 long <- (out
   %>% gather(., state, n, -time)
 )
@@ -267,11 +258,11 @@ ggplot(data = prev, aes(x = time, y = mean)) +
   ggtitle("HIV Prevalence")
 
 
-ggplot(data = long[long$state %in% c("S", "I", "N"), ], aes(x = time, y = n)) +
-  geom_line(aes(colour = state)) +
-  labs(x = "Year", y = "Number") +
-  ggtitle("Number of people in S, I, and N compartments")
-
+# ggplot(data = long[long$state %in% c("S", "I", "N"), ], aes(x = time, y = n)) +
+#   geom_line(aes(colour = state)) +
+#   labs(x = "Year", y = "Number") +
+#   ggtitle("Number of people in S, I, and N compartments")
+# 
 
 
 
