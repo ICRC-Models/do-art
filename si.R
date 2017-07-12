@@ -27,6 +27,7 @@ zeroes <- array(data = rep(0, length(age) * length(sex) * length(hiv)),
 
 pop <- zeroes
 
+## Function to reconstruct multi-dimensional array from single dimension output vector
 reconstruct <- function(vec) {
   array(data = vec,
         dim = c(length(age), length(sex), length(hiv)),
@@ -34,13 +35,21 @@ reconstruct <- function(vec) {
   
 }
 
+## Function to create data.frame from single dimension output vector. Note that this function depends on the order by which the array is initiated in the first place
+createOutputFrame <- function(n) {
+  
+  df <- expand.grid(age = age_names, sex = sex_names, hiv = hiv_names)
+  df$n <- n
+  return(df)
+}
+
 ## Initial parameters
 ## Function that makes a list of disease parameters with default values
 disease_params <- function(Beta = 0.7
-                           , alpha = 7## rate of beta decline with prevalence
+                           , alpha = 7 ## rate of beta decline with prevalence
                            , q = 2 ## Effect of behavior change in response to mortality
                            , progRt = (1/10)*4 ## rate of of progression through each of the I classes, for 10 years total
-                           , birthRt = rep(.03, length(age)) ## age-specific birth rate, 3% of people give birth per year
+                           , birthRt = rep(0.05, length(age)) ## age-specific birth rate, 3% of people give birth per year
                            , deathRt = 1/(60) ## 60 year natural life expectancy
                            , ageRt = 1/5 ## In a given year, 1/5 of a 5-year age group will progress to the next age group
                            , births = zeroes
@@ -86,7 +95,7 @@ SImod <- function(tt, yy, parms) with(as.list(parms), {
   deaths <- - deathRt * state
     
   ## Aging
-  age_out <- ageRt * state
+  age_out <- -ageRt * state
   age_in[2:length(age),,] <- ageRt * state[1:(length(age) - 1),,]
   
   ## Disease Progression
@@ -110,36 +119,45 @@ SImod <- function(tt, yy, parms) with(as.list(parms), {
 ## SImod(yy = c(pop), tt = tseqMonth, disease_params())
 # reconstruct(unlist(SImod(tseqMonth, as.vector(pop), disease_params())))
 
-
 ## Function to run the deterministic model simulation, based on the ODE system defined in SImod().
-simEpidemic <- function(tseq = tseqMonth, init = c(pop), modFunction=SImod, parms = disease_params()) {
+simEpidemic <- function(tseq = tseqMonth, init = c(pop), modFunction=SImod, parms = disease_params(), detail = "fit") {
+  
   simDat <- as.data.frame(lsoda(y = init, times = tseq, modFunction, parms=parms))
   
-  simDat <- apply(simDat[, 2:ncol(simDat)], 1, function(x){
-
-    state <- reconstruct(x)
-    N <- sum(state)
-    S <- sum(state[,,"negative"])
-    I <- sum(state[,, hiv_states])
-
-    return(c(N, S, I))
-
-
-  })
-
-  simDat <- as.data.frame(t(simDat))
-  names(simDat) <- c("N", "S", "I")
-  simDat$time <- tseqMonth
-  simDat$P <- with(simDat, I/N)
-
-
-  return(simDat)
+  if(detail == "fit") { ## Calculate prevalence for fitting purposes
+    
+    out <- apply(simDat[, 2:ncol(simDat)], 1, function(x){
+      
+      state <- reconstruct(x)
+      N <- sum(state)
+      S <- sum(state[,,"negative"])
+      I <- sum(state[,, hiv_states])
+      
+      return(c(N, S, I))
+      
+      
+    })
+    
+    out <- as.data.frame(t(out))
+    names(out) <- c("N", "S", "I")
+    out$time <- tseqMonth
+    out$P <- with(out, I/N)
+    
+  } else if(detail == "output") { ## Return full output data.frame to calculate statistics
+    
+    out_list <- alply(simDat, 1, function(x) {
+      df <- createOutputFrame(c(t(x[2:ncol(x)])))
+      df$time <- x[1, 1]
+      return(df)
+    })
+    
+    out <- do.call("rbind", out_list)
+    
+    
+  }
+  
+  return(out)
 }
-
-##out <- simEpidemic()
-
-# x <-unlist(out[nrow(out), 2:ncol(out)])
-# reconstruct(x)
 
 ## Prevalence estimates
 kzn_prev <- read_csv("data/kzn_hiv_prev_survey.csv")
@@ -171,7 +189,7 @@ subsParms <- function(fit.params, fixed.params=disease_params())
 
 ## Likelihood
 nllikelihood <- function(parms = disease_params(), obsDat=prev) {
-  simDat <- simEpidemic(init = c(pop), parms=parms)
+  simDat <- simEpidemic(init = c(pop), parms=parms, detail = "fit")
   ## What are the rows from our simulation at which we have observed data?
   matchedTimes <- simDat$time %in% obsDat$time
   nlls <- -dbinom(obsDat$numPos, obsDat$numSamp, prob = simDat$P[matchedTimes], log = T)
@@ -219,27 +237,60 @@ MLEfits <- optim.vals$par
 exp(MLEfits)
 
 ## Run simulation
-out <- simEpidemic(init = c(pop), parms = disease_params("Beta" = exp(MLEfits['log_Beta']), "alpha" = exp(MLEfits['log_alpha']), "q" = exp(MLEfits['log_q'])))
+out <- simEpidemic(init = c(pop), parms = disease_params("Beta" = exp(MLEfits['log_Beta']), "alpha" = exp(MLEfits['log_alpha']), "q" = exp(MLEfits['log_q'])), detail = "output")
 
-long <- (out
-  %>% gather(., state, n, -time)
+## Calculate statistics
+## Sex-specific population
+detach(package:plyr) ## Apparently this is necessary for dplyr to work correctly
+sex_pop <- (out
+            %>% group_by(., sex, time)
+            %>% summarise(., sex_total = sum(n))
 )
 
-## Plots
-ggplot(data = prev, aes(x = time, y = mean)) +
-  geom_point(aes(shape = source)) +
-  ## geom_errorbar(aes(ymin = lower, ymax = upper)) +
-  geom_line(data = out, aes(x = time, y = P)) +
+sex_pop_plot <- ggplot(data = sex_pop, aes(x = time, y = sex_total/10000)) +
+  geom_line(aes(colour = sex)) +
+  labs(x = "Year", y = "Total population (tens of thousands)")
+
+## Age/sex-specific population
+age_sex_pop <- (out
+            %>% group_by(., sex, age, time)
+            %>% summarise(., age_sex_total = sum(n))
+)
+
+age_sex_pop_plot <- ggplot(data = age_sex_pop, aes(x = time, y = age_sex_total/10000)) +
+  geom_line(aes(colour = sex)) +
+  labs(x = "Year", y = "Total population (tens of thousands)") +
+  facet_wrap(~age)
+
+## Sex-specific prevalence
+sex_inf_pop <- (out
+            %>% filter(., hiv != "negative")
+            %>% group_by(., sex, time)
+            %>% summarise(., sex_inf = sum(n))
+)
+
+sex_prev <- inner_join(sex_pop, sex_inf_pop)
+sex_prev$prev <- with(sex_prev, sex_inf/sex_total)
+  
+sex_prev_plot <- ggplot(data = sex_prev, aes(x = time, y = prev)) +
+  geom_line(aes(colour = sex)) +
+  labs(x = "Year", y = "Prevalence") 
+
+## Age/sex-specific prevalence
+age_sex_inf_pop <- (out
+                %>% filter(., hiv != "negative")
+                %>% group_by(., age, sex, time)
+                %>% summarise(., age_sex_inf = sum(n))
+)
+
+age_sex_prev <- inner_join(age_sex_pop, age_sex_inf_pop)
+age_sex_prev$prev <- with(age_sex_prev, age_sex_inf/age_sex_total)
+
+age_sex_prev_plot <- ggplot(data = age_sex_prev, aes(x = time, y = prev)) +
+  geom_line(aes(colour = sex)) +
   labs(x = "Year", y = "Prevalence") +
-  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, by = 0.2)) +
-  ggtitle("HIV Prevalence")
+  facet_wrap(~age)
 
-
-# ggplot(data = long[long$state %in% c("S", "I", "N"), ], aes(x = time, y = n)) +
-#   geom_line(aes(colour = state)) +
-#   labs(x = "Year", y = "Number") +
-#   ggtitle("Number of people in S, I, and N compartments")
-# 
 
 
 
